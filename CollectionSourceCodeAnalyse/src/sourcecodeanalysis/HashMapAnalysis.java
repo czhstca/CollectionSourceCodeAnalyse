@@ -1,7 +1,10 @@
 package sourcecodeanalysis;
 
+import java.io.IOException;
+import java.io.InvalidObjectException;
 import java.io.Serializable;
 import java.util.*;
+import java.util.HashMap.Node;
 
 /**
  * HashMap核心源码分析(基于JDK 1.8)
@@ -56,8 +59,26 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
      *
      * 12.HashMap的优点:遍历、插入删除的速度都很快
      *
-     * 13.HashMap的缺点:
-     *
+     * 13.HashMap的缺点:在多线程并发情况下可能会导致死循环
+     * 
+     * 14.为什么HashMap的table容量都是2的整数幂？
+     *    因为二进制计算比十进制计算快,resize只需向左移动一位即可
+     * 
+     * 15.为什么查找结点应该放在哪个桶时  (n - 1) & hash 使用的是这种写法?
+     * 	     为什么不直接使用  n & hash 的写法?
+     * 	     因为table的容量永远是2的整数幂，换算成二进制最后一位永远为0
+     *    而hash转化为二进制最后一位有可能是1，也有可能是0，但是&操作是两个同时为真才是真
+     *    所以如果直接用 n & hash 的写法，那么与出来的结果二进制最后一位永远为0
+     *    但是n-1一定为奇数，而奇数的二进制最后一位一定为1
+     *    所以用 (n - 1) & hash 这种写法 在hash最后一位也为1是，&的二进制结果最后一位就是1
+     *    这个结果就是table的奇数索引处也能够存放结点了，否则最后一位永远为0，那么table的奇数索引处永远也放不了结点，造成空间浪费，哈希碰撞非常严重
+     * 
+     * 16.为什么 resize() 方法中有使用    e.hash & oldCap 把当前桶中的链表上所有结点分为高位和低位两部分？
+     *    因为oldCap永远是2的整数幂，而hash的二进制数每一位都有可能是1，也有可能是0
+     *    所以理论上来说这么写能够将链表中的结点较为平均的分为高位和低位两部分
+     *    较之1.7及之前的rehash操作每次resize，每个元素都需要重新计算hash值来讲效率提升了很多
+     *    这也是为什么用  & 而不是用 % 计算余数的原因.
+     * 
      */
 
 
@@ -101,7 +122,7 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
 
         public final int hashCode() {
             //直接调用object类的hashcode()方法
-            //key和value按位异或，不同为真
+            //key和value的hashcode按位异或，不同为真
             //注意：一个数a两次对同一个值b进行异或操作得到的还是它本身
             return Objects.hashCode(key) ^ Objects.hashCode(value);
         }
@@ -154,7 +175,7 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
     //结构改变次数，fast-fail机制
     transient int modCount;
 
-    //自定义的rehash操作临界值
+    //rehash操作临界值
     int threshold;
 
     //自定义的负载因子
@@ -163,6 +184,20 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
 
     /**   HashMap用到的核心方法  */
 
+    /**
+     * 无参构造方法，只设置了默认的负载因子
+     */
+    public HashMap() {
+        this.loadFactor = DEFAULT_LOAD_FACTOR; // all other fields defaulted
+    }
+    
+    /**
+     * 带初始容量参数的构造方法
+     * @param initialCapacity  自定义table初始容量
+     */
+    public HashMap(int initialCapacity) {
+        this(initialCapacity, DEFAULT_LOAD_FACTOR);
+    }
 
     /**
      *可以自定义初始容量和负载因子的构造方法
@@ -206,7 +241,7 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
                     return ((HashMap.TreeNode<K,V>)first).getTreeNode(hash, key);
                 do {  //如果还是链表方式存储，则遍历链表，若有找到hash相同并且key也相同的结点，那么就是需要找的结点，返回该结点;没找到则返回null
                     if (e.hash == hash &&
-                            ((k = e.key) == key || (key != null && key.equals(k))))
+                            ((k = e.key) == key || (key != null && key.equals(k))))  //key有可能是基本数据类型，也有可能是对象
                         return e;
                 } while ((e = e.next) != null);
             }
@@ -216,86 +251,95 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
 
 
     /**
-     * Implements Map.put and related methods
+     * 根据传入的key和value添加/设置值
+     * 若原先table中已存在该key对象对应的键值对，则将其值更改为新的value
+     * 若原先table中不存在该key对象对应键值对，则计算其所需放入的bucket位置，将其放入
      *
-     * @param hash hash for key
-     * @param key the key
-     * @param value the value to put
-     * @param onlyIfAbsent if true, don't change existing value
-     * @param evict if false, the table is in creation mode.
-     * @return previous value, or null if none
+     * @param hash key的hash值
+     * @param key key对象
+     * @param value 新的value
+     * @param onlyIfAbsent 如果为true，则不改变已存在键值对的值
+     * @param evict 如果为false，则table处于creation模式
+     * @return  之前有键值对存在，则返回之前该key对应的value；否则返回null 
      */
     final V putVal(int hash, K key, V value, boolean onlyIfAbsent,
                    boolean evict) {
-        HashMap.Node<K,V>[] tab; HashMap.Node<K,V> p; int n, i;
-        if ((tab = table) == null || (n = tab.length) == 0)
-            n = (tab = resize()).length;
-        if ((p = tab[i = (n - 1) & hash]) == null)
-            tab[i] = newNode(hash, key, value, null);
-        else {
-            HashMap.Node<K,V> e; K k;
+        HashMap.Node<K,V>[] tab; 
+        HashMap.Node<K,V> p; //某个桶的首结点
+        int n, i;
+        if ((tab = table) == null || (n = tab.length) == 0)  //如果buckets数组还没有初始化，先调用resize()方法初始化table
+            n = (tab = resize()).length;   //记录下此时table的大小(桶的数量)
+        if ((p = tab[i = (n - 1) & hash]) == null)  //如果根据hash值计算出该键值对应该放的桶位置，若此时该位置还没有结点存在
+            tab[i] = newNode(hash, key, value, null);  //直接将该键值对设置为该桶的第一个结点
+        else {  //执行到这里，说明发生碰撞，即tab[i]不为空，需要组成单链表或红黑树
+            HashMap.Node<K,V> e;
+            K k;
             if (p.hash == hash &&
                     ((k = p.key) == key || (key != null && key.equals(k))))
-                e = p;
-            else if (p instanceof HashMap.TreeNode)
-                e = ((HashMap.TreeNode<K,V>)p).putTreeVal(this, tab, hash, key, value);
-            else {
-                for (int binCount = 0; ; ++binCount) {
-                    if ((e = p.next) == null) {
-                        p.next = newNode(hash, key, value, null);
-                        if (binCount >= TREEIFY_THRESHOLD - 1) // -1 for 1st
-                            treeifyBin(tab, hash);
+                e = p;  //发现该位置处第一个结点的key就是新传入键值对的key，则将该结点记录下来
+            else if (p instanceof HashMap.TreeNode)  //如果桶中首结点已经是以红黑树结构存储
+                e = ((HashMap.TreeNode<K,V>)p).putTreeVal(this, tab, hash, key, value);  //调用树的put()方法
+            else {  //桶中结点依旧还是链表存储
+                for (int binCount = 0; ; ++binCount) {  //遍历链表，binCount记录已遍历结点个数
+                    if ((e = p.next) == null) {  //如果当前遍历到的结点为空,说明之前遍历过的结点没有和当前传入键值对key相同的结点，需要新增该结点
+                        p.next = newNode(hash, key, value, null);  //新增结点
+                        if (binCount >= TREEIFY_THRESHOLD - 1) //如果新增该结点后，当前桶中的结点个数大于树化的界定值
+                            treeifyBin(tab, hash);   //转为红黑树结构存储
                         break;
                     }
-                    if (e.hash == hash &&
+                    if (e.hash == hash &&   //如果遍历过程中在桶中找到了和当前传入键值对key相同的结点，则将该结点记录下来
                             ((k = e.key) == key || (key != null && key.equals(k))))
                         break;
                     p = e;
                 }
             }
-            if (e != null) { // existing mapping for key
+            if (e != null) { //如果之前在桶中找到了和当前传入键值对key相同的结点，则将值进行替换
                 V oldValue = e.value;
                 if (!onlyIfAbsent || oldValue == null)
                     e.value = value;
                 afterNodeAccess(e);
-                return oldValue;
+                return oldValue;  //返回原先该结点的value
             }
         }
-        ++modCount;
-        if (++size > threshold)
+        ++modCount;  //该操作属于更改map结构的操作
+        if (++size > threshold)  //如果插入该结点后map总结点个数大于阙值，则需要扩容和rehash
             resize();
         afterNodeInsertion(evict);
         return null;
     }
 
     /**
-     * Implements Map.remove and related methods
+     * 根据传入的key值(必要时可增加value值判断)删除结点
      *
-     * @param hash hash for key
-     * @param key the key
-     * @param value the value to match if matchValue, else ignored
-     * @param matchValue if true only remove if value is equal
-     * @param movable if false do not move other nodes while removing
-     * @return the node, or null if none
+     * @param hash key的hash值
+     * @param key key对象
+     * @param value 需要判断value时才传入
+     * @param matchValue 如果为true，则必须key和value同时和传入结点相同才会被删除
+     * @param movable 如果为false，删除时不移动其他结点
+     * @return 被删除结点，或没找到要删除结点则返回null
      */
     final HashMap.Node<K,V> removeNode(int hash, Object key, Object value,
                                        boolean matchValue, boolean movable) {
-        HashMap.Node<K,V>[] tab; HashMap.Node<K,V> p; int n, index;
+        HashMap.Node<K,V>[] tab; 
+        HashMap.Node<K,V> p; 
+        int n, index;
         if ((tab = table) != null && (n = tab.length) > 0 &&
-                (p = tab[index = (n - 1) & hash]) != null) {
-            HashMap.Node<K,V> node = null, e; K k; V v;
-            if (p.hash == hash &&
+                (p = tab[index = (n - 1) & hash]) != null) {  //如果table已经初始化，大小不为0，且根据key的hash计算桶的位置处已有结点存在
+            HashMap.Node<K,V> node = null, e; 
+            K k; 
+            V v;
+            if (p.hash == hash &&  //如果要删除的结点就是该桶的第一个结点
                     ((k = p.key) == key || (key != null && key.equals(k))))
-                node = p;
-            else if ((e = p.next) != null) {
-                if (p instanceof HashMap.TreeNode)
-                    node = ((HashMap.TreeNode<K,V>)p).getTreeNode(hash, key);
-                else {
+                node = p;  //将该结点保存下来
+            else if ((e = p.next) != null) { //如果第一个结点不是要删除的结点，则需要先遍历查找到该结点，再删除
+                if (p instanceof HashMap.TreeNode)  //如果该桶中首结点是树结点，说明已是树存储结构
+                    node = ((HashMap.TreeNode<K,V>)p).getTreeNode(hash, key);  //需调用树的get()方法查找和当前需删除结点key相同的结点
+                else {  //否则依旧还是链表存储，遍历链表
                     do {
                         if (e.hash == hash &&
                                 ((k = e.key) == key ||
-                                        (key != null && key.equals(k)))) {
-                            node = e;
+                                        (key != null && key.equals(k)))) {  //如果找到和要删除结点的key相同的结点
+                            node = e;  //保存下来
                             break;
                         }
                         p = e;
@@ -303,17 +347,17 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
                 }
             }
             if (node != null && (!matchValue || (v = node.value) == value ||
-                    (value != null && value.equals(v)))) {
-                if (node instanceof HashMap.TreeNode)
-                    ((HashMap.TreeNode<K,V>)node).removeTreeNode(this, tab, movable);
-                else if (node == p)
-                    tab[index] = node.next;
-                else
-                    p.next = node.next;
-                ++modCount;
-                --size;
+                    (value != null && value.equals(v)))) {  //如果之前在桶中找到了和当前传入键值对key相同的结点
+                if (node instanceof HashMap.TreeNode)  //之前找到的结点是树结点
+                    ((HashMap.TreeNode<K,V>)node).removeTreeNode(this, tab, movable);  //调用树的remove()方法
+                else if (node == p)  //之前找到的结点是桶中的首结点
+                    tab[index] = node.next;  //将桶的首结点删除，并将下一个结点设置为首结点
+                else  //之前找到的结点是链表中其中一个结点
+                    p.next = node.next;  //删除该结点，并将前一个结点后驱指向被删除结点的下一个结点
+                ++modCount; //该操作属于更改map结构的操作
+                --size;  //map总结点个数减1
                 afterNodeRemoval(node);
-                return node;
+                return node;  //返回被删除的结点
             }
         }
         return null;
@@ -321,80 +365,80 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
 
 
     /**
-     * Initializes or doubles table size.  If null, allocates in
-     * accord with initial capacity target held in field threshold.
-     * Otherwise, because we are using power-of-two expansion, the
-     * elements from each bin must either stay at same index, or move
-     * with a power of two offset in the new table.
+     * 初始化数组或者扩容为2倍.
+     * 初值为空时，则根据初始容量开辟空间来创建数组.
+     * 否则， 因为我们使用2的幂定义数组大小，数据要么待在原来的下标， 或者移动到新数组的高位下标
+     * 比如初始容量为16，原来有两个数据在index为1的桶中；resize后容量为32，原来那两个数据既可以在index为1的桶，也可以在index为17的桶中
      *
-     * @return the table
+     * @return 扩容后的新数组
      */
     final HashMap.Node<K,V>[] resize() {
-        HashMap.Node<K,V>[] oldTab = table;
-        int oldCap = (oldTab == null) ? 0 : oldTab.length;
-        int oldThr = threshold;
-        int newCap, newThr = 0;
-        if (oldCap > 0) {
-            if (oldCap >= MAXIMUM_CAPACITY) {
-                threshold = Integer.MAX_VALUE;
-                return oldTab;
+        HashMap.Node<K,V>[] oldTab = table;  //记录原数组
+        int oldCap = (oldTab == null) ? 0 : oldTab.length;  //记录原数组Capacity
+        int oldThr = threshold;  //记录原数组的rehash阙值
+        int newCap, newThr = 0;  //新数组capacity,rehash阙值
+        if (oldCap > 0) { //如果原数组capacity>0
+            if (oldCap >= MAXIMUM_CAPACITY) { //原数组capacity已经达到容量最大值
+                threshold = Integer.MAX_VALUE;  //阙值设置为最大值
+                return oldTab;   //直接返回原数组
             }
             else if ((newCap = oldCap << 1) < MAXIMUM_CAPACITY &&
-                    oldCap >= DEFAULT_INITIAL_CAPACITY)
-                newThr = oldThr << 1; // double threshold
+                    oldCap >= DEFAULT_INITIAL_CAPACITY)  //新数组capacity为原数组两倍，如果此时数组大小还在16至最大值之间
+                newThr = oldThr << 1; //新阙值也变为原先的两倍
         }
-        else if (oldThr > 0) // initial capacity was placed in threshold
-            newCap = oldThr;
-        else {               // zero initial threshold signifies using defaults
-            newCap = DEFAULT_INITIAL_CAPACITY;
-            newThr = (int)(DEFAULT_LOAD_FACTOR * DEFAULT_INITIAL_CAPACITY);
+        else if (oldThr > 0) // 如果原阙值>0,说明调用HashMap构造方法(带阙值参数的那个)时只设置了阙值大小但没有设置capacity
+            newCap = oldThr;  //将阙值大小直接赋值给新数组capacity
+        else { //如果直接调用HashMap无参构造方法，则初始capacity和阙值都没有被设置，此处给它设置上
+            newCap = DEFAULT_INITIAL_CAPACITY;   //初始capacity默认为16
+            newThr = (int)(DEFAULT_LOAD_FACTOR * DEFAULT_INITIAL_CAPACITY);  //阙值默认为16*0.75=12
         }
-        if (newThr == 0) {
-            float ft = (float)newCap * loadFactor;
+        if (newThr == 0) { //如果新阙值为0，重新设置阙值，防止意外情况
+            float ft = (float)newCap * loadFactor;  //用新capacity * 当前负载因子得到计算结果
             newThr = (newCap < MAXIMUM_CAPACITY && ft < (float)MAXIMUM_CAPACITY ?
-                    (int)ft : Integer.MAX_VALUE);
+                    (int)ft : Integer.MAX_VALUE);//若新容量和该计算结果都未达到最大值，则新阙值就是该计算结果；否则新阙值为int最大值
         }
         threshold = newThr;
         @SuppressWarnings({"rawtypes","unchecked"})
         HashMap.Node<K,V>[] newTab = (HashMap.Node<K,V>[])new HashMap.Node[newCap];
-        table = newTab;
-        if (oldTab != null) {
-            for (int j = 0; j < oldCap; ++j) {
+        table = newTab;  //用新容量初始化新数组
+        if (oldTab != null) { //若旧数组已经被初始化 
+            for (int j = 0; j < oldCap; ++j) {  //遍历旧数组每个桶，对桶中每一个结点重新计算索引值，放入新数组对应的桶中
                 HashMap.Node<K,V> e;
-                if ((e = oldTab[j]) != null) {
-                    oldTab[j] = null;
-                    if (e.next == null)
-                        newTab[e.hash & (newCap - 1)] = e;
-                    else if (e instanceof HashMap.TreeNode)
-                        ((HashMap.TreeNode<K,V>)e).split(this, newTab, j, oldCap);
-                    else { // preserve order
+                if ((e = oldTab[j]) != null) {  //如果当前遍历到的桶中第一个结点不为空，才继续往下走，否则直接进行下一个桶的遍历
+                    oldTab[j] = null; //将该桶的首结点置空
+                    if (e.next == null)  //如果该结点没有后续结点，即该桶中只有这一个结点
+                        newTab[e.hash & (newCap - 1)] = e;  //将该结点重新计算index后，放入新数组的桶中
+                    else if (e instanceof HashMap.TreeNode)  //如果该结点有后续结点，且该结点已经是树存储
+                        ((HashMap.TreeNode<K,V>)e).split(this, newTab, j, oldCap);  //则直接调用树的split方法
+                    else { //如果该结点有后续结点，且该桶中结点存储方式还是链表存储
                         HashMap.Node<K,V> loHead = null, loTail = null;
                         HashMap.Node<K,V> hiHead = null, hiTail = null;
                         HashMap.Node<K,V> next;
                         do {
                             next = e.next;
-                            if ((e.hash & oldCap) == 0) {
-                                if (loTail == null)
-                                    loHead = e;
-                                else
-                                    loTail.next = e;
-                                loTail = e;
+                            //e.hash & oldCap 将该链表的结点均匀分散为新数组低位和高位两个位置
+                            if ((e.hash & oldCap) == 0) { // 如果被分到低位，则在新数组中的桶位置和原先的桶是一样的
+                                if (loTail == null)  //如果新数组中低位桶尾结点为空，说明该桶当前还没有结点
+                                    loHead = e;  //则直接将新数组中该低位桶首结点设置为当前链表中遍历到的结点
+                                else //如果新数组中低位桶尾结点不为空
+                                    loTail.next = e;  //则将当前链表中遍历到的结点添加到新数组中该低位桶的链表尾部
+                                loTail = e; //新数组中该低位桶的链表尾结点设置为该结点
                             }
-                            else {
-                                if (hiTail == null)
-                                    hiHead = e;
-                                else
-                                    hiTail.next = e;
-                                hiTail = e;
+                            else {  //如果被分到高位，则在新数组中的桶位置为原先所在桶位置+原先桶的capacity
+                                if (hiTail == null) //如果新数组中高位桶尾结点为空，说明该桶当前还没有结点
+                                    hiHead = e; //则直接将新数组中该高位桶首结点设置为当前链表中遍历到的结点
+                                else //如果新数组中高位桶尾结点不为空
+                                    hiTail.next = e; //则将当前链表中遍历到的结点添加到新数组中该高位桶的链表尾部
+                                hiTail = e; //新数组中该高位桶的链表尾结点设置为该结点
                             }
                         } while ((e = next) != null);
-                        if (loTail != null) {
-                            loTail.next = null;
-                            newTab[j] = loHead;
+                        if (loTail != null) {  //如果新数组低位桶的尾结点非空
+                            loTail.next = null;  //则将其下一个结点设置为null，方便后续结点插入
+                            newTab[j] = loHead;  //并将新数组中低位桶首结点设置为loHead中保存的结点
                         }
-                        if (hiTail != null) {
-                            hiTail.next = null;
-                            newTab[j + oldCap] = hiHead;
+                        if (hiTail != null) {  //如果新数组高位桶的尾结点非空
+                            hiTail.next = null; //则将其下一个结点设置为null，方便后续结点插入
+                            newTab[j + oldCap] = hiHead; //并将新数组中高位桶首结点设置为hiHead中保存的结点
                         }
                     }
                 }
@@ -405,16 +449,17 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
 
 
     /**
-     * Replaces all linked nodes in bin at index for given hash unless
-     * table is too small, in which case resizes instead.
+     * 将桶中结点的存储方式更改为红黑树的存储方式
+     * 注意：如果当前桶的数量小于64，则不会做树化操作，而是直接调用resize扩容
      */
     final void treeifyBin(HashMap.Node<K,V>[] tab, int hash) {
-        int n, index; HashMap.Node<K,V> e;
-        if (tab == null || (n = tab.length) < MIN_TREEIFY_CAPACITY)
-            resize();
-        else if ((e = tab[index = (n - 1) & hash]) != null) {
+        int n, index;
+        HashMap.Node<K,V> e;
+        if (tab == null || (n = tab.length) < MIN_TREEIFY_CAPACITY) //如果当前数组未初始化或桶的数量小于64则不做树化操作，而是用resize()方法替代
+            resize();  
+        else if ((e = tab[index = (n - 1) & hash]) != null) { //如果该桶的首结点不为null
             HashMap.TreeNode<K,V> hd = null, tl = null;
-            do {
+            do {  //将每个结点的存储方式更改为红黑树存储
                 HashMap.TreeNode<K,V> p = replacementTreeNode(e, null);
                 if (tl == null)
                     hd = p;
@@ -430,19 +475,70 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
     }
 
     
+    /**
+     * Save the state of the <tt>HashMap</tt> instance to a stream (i.e.,
+     * serialize it).
+     *
+     * @serialData The <i>capacity</i> of the HashMap (the length of the
+     *             bucket array) is emitted (int), followed by the
+     *             <i>size</i> (an int, the number of key-value
+     *             mappings), followed by the key (Object) and value (Object)
+     *             for each key-value mapping.  The key-value mappings are
+     *             emitted in no particular order.
+     */
+    private void writeObject(java.io.ObjectOutputStream s)
+        throws IOException {
+        int buckets = capacity();
+        // Write out the threshold, loadfactor, and any hidden stuff
+        s.defaultWriteObject();
+        s.writeInt(buckets);
+        s.writeInt(size);
+        internalWriteEntries(s);
+    }
 
+    /**
+     * Reconstitute the {@code HashMap} instance from a stream (i.e.,
+     * deserialize it).
+     */
+    private void readObject(java.io.ObjectInputStream s)
+        throws IOException, ClassNotFoundException {
+        // Read in the threshold (ignored), loadfactor, and any hidden stuff
+        s.defaultReadObject();
+        reinitialize();
+        if (loadFactor <= 0 || Float.isNaN(loadFactor))
+            throw new InvalidObjectException("Illegal load factor: " +
+                                             loadFactor);
+        s.readInt();                // Read and ignore number of buckets
+        int mappings = s.readInt(); // Read number of mappings (size)
+        if (mappings < 0)
+            throw new InvalidObjectException("Illegal mappings count: " +
+                                             mappings);
+        else if (mappings > 0) { // (if zero, use defaults)
+            // Size the table using given load factor only if within
+            // range of 0.25...4.0
+            float lf = Math.min(Math.max(0.25f, loadFactor), 4.0f);
+            float fc = (float)mappings / lf + 1.0f;
+            int cap = ((fc < DEFAULT_INITIAL_CAPACITY) ?
+                       DEFAULT_INITIAL_CAPACITY :
+                       (fc >= MAXIMUM_CAPACITY) ?
+                       MAXIMUM_CAPACITY :
+                       tableSizeFor((int)fc));
+            float ft = (float)cap * lf;
+            threshold = ((cap < MAXIMUM_CAPACITY && ft < MAXIMUM_CAPACITY) ?
+                         (int)ft : Integer.MAX_VALUE);
+            @SuppressWarnings({"rawtypes","unchecked"})
+                Node<K,V>[] tab = (Node<K,V>[])new Node[cap];
+            table = tab;
 
-
-
-
-
-
-
-
-    @Override
-    public Set<java.util.Map.Entry<K, V>> entrySet() {
-        // TODO Auto-generated method stub
-        return null;
+            // Read the keys and values, and put the mappings in the HashMap
+            for (int i = 0; i < mappings; i++) {
+                @SuppressWarnings("unchecked")
+                    K key = (K) s.readObject();
+                @SuppressWarnings("unchecked")
+                    V value = (V) s.readObject();
+                putVal(hash(key), key, value, false, false);
+            }
+        }
     }
 
 }
