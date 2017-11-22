@@ -65,15 +65,15 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
      *    因为二进制计算比十进制计算快,resize只需向左移动一位即可
      * 
      * 15.为什么查找结点应该放在哪个桶时  (n - 1) & hash 使用的是这种写法?
-     * 	     为什么不直接使用  n & hash 的写法?
-     * 	     因为table的容量永远是2的整数幂，换算成二进制最后一位永远为0
+     * 	  为什么不直接使用  n & hash 的写法?
+     * 	  因为table的容量永远是2的整数幂，换算成二进制最后一位永远为0
      *    而hash转化为二进制最后一位有可能是1，也有可能是0，但是&操作是两个同时为真才是真
      *    所以如果直接用 n & hash 的写法，那么与出来的结果二进制最后一位永远为0
      *    但是n-1一定为奇数，而奇数的二进制最后一位一定为1
      *    所以用 (n - 1) & hash 这种写法 在hash最后一位也为1是，&的二进制结果最后一位就是1
      *    这个结果就是table的奇数索引处也能够存放结点了，否则最后一位永远为0，那么table的奇数索引处永远也放不了结点，造成空间浪费，哈希碰撞非常严重
      * 
-     * 16.为什么 resize() 方法中有使用    e.hash & oldCap 把当前桶中的链表上所有结点分为高位和低位两部分？
+     * 16.为什么 resize() 方法中有使用  e.hash & oldCap 把当前桶中的链表上所有结点分为高位和低位两部分？
      *    因为oldCap永远是2的整数幂，而hash的二进制数每一位都有可能是1，也有可能是0
      *    所以理论上来说这么写能够将链表中的结点较为平均的分为高位和低位两部分
      *    较之1.7及之前的rehash操作每次resize，每个元素都需要重新计算hash值来讲效率提升了很多
@@ -164,6 +164,10 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
     }
 
     //存放桶的数组
+    //为什么table不需要被序列化?
+    //因为计算哈希值时有调用object类的hashcode()方法，而不同的虚拟机可能调用该方法返回结果不同
+    //导致一个结点在不同的虚拟机下可能放入不同的数组bucket中，但JAVA设计时明确表示是跨平台的语言
+    //所以宁可在序列化时将每个结点的key和value以及hash都存储下来，来保证跨平台的正确性
     transient HashMap.Node<K,V>[] table;
 
     //map中所有的键值对
@@ -268,8 +272,8 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
         HashMap.Node<K,V> p; //某个桶的首结点
         int n, i;
         if ((tab = table) == null || (n = tab.length) == 0)  //如果buckets数组还没有初始化，先调用resize()方法初始化table
-            n = (tab = resize()).length;   //记录下此时table的大小(桶的数量)
-        if ((p = tab[i = (n - 1) & hash]) == null)  //如果根据hash值计算出该键值对应该放的桶位置，若此时该位置还没有结点存在
+            n = (tab = resize()).length;   //记录下初始化完成后此时table的大小(桶的数量)
+        if ((p = tab[i = (n - 1) & hash]) == null)  //根据hash值计算出该键值对应该放的桶位置，若此时该位置还没有结点存在
             tab[i] = newNode(hash, key, value, null);  //直接将该键值对设置为该桶的第一个结点
         else {  //执行到这里，说明发生碰撞，即tab[i]不为空，需要组成单链表或红黑树
             HashMap.Node<K,V> e;
@@ -297,7 +301,7 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
                 V oldValue = e.value;
                 if (!onlyIfAbsent || oldValue == null)
                     e.value = value;
-                afterNodeAccess(e);
+                afterNodeAccess(e);   //回调操作
                 return oldValue;  //返回原先该结点的value
             }
         }
@@ -387,7 +391,7 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
                 newThr = oldThr << 1; //新阙值也变为原先的两倍
         }
         else if (oldThr > 0) // 如果原阙值>0,说明调用HashMap构造方法(带阙值参数的那个)时只设置了阙值大小但没有设置capacity
-            newCap = oldThr;  //将阙值大小直接赋值给新数组capacity
+            newCap = oldThr;  //将阙值大小直接赋值给新数组的capacity
         else { //如果直接调用HashMap无参构造方法，则初始capacity和阙值都没有被设置，此处给它设置上
             newCap = DEFAULT_INITIAL_CAPACITY;   //初始capacity默认为16
             newThr = (int)(DEFAULT_LOAD_FACTOR * DEFAULT_INITIAL_CAPACITY);  //阙值默认为16*0.75=12
@@ -402,7 +406,7 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
         HashMap.Node<K,V>[] newTab = (HashMap.Node<K,V>[])new HashMap.Node[newCap];
         table = newTab;  //用新容量初始化新数组
         if (oldTab != null) { //若旧数组已经被初始化 
-            for (int j = 0; j < oldCap; ++j) {  //遍历旧数组每个桶，对桶中每一个结点重新计算索引值，放入新数组对应的桶中
+            for (int j = 0; j < oldCap; ++j) {  //遍历旧数组每个桶，对桶中每一个结点判断应放入高位还是低位，并放入新数组对应的桶中
                 HashMap.Node<K,V> e;
                 if ((e = oldTab[j]) != null) {  //如果当前遍历到的桶中第一个结点不为空，才继续往下走，否则直接进行下一个桶的遍历
                     oldTab[j] = null; //将该桶的首结点置空
@@ -416,7 +420,7 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
                         HashMap.Node<K,V> next;
                         do {
                             next = e.next;
-                            //e.hash & oldCap 将该链表的结点均匀分散为新数组低位和高位两个位置
+                            //e.hash & oldCap 将该链表的所有结点均匀分散为新数组低位和高位两个位置
                             if ((e.hash & oldCap) == 0) { // 如果被分到低位，则在新数组中的桶位置和原先的桶是一样的
                                 if (loTail == null)  //如果新数组中低位桶尾结点为空，说明该桶当前还没有结点
                                     loHead = e;  //则直接将新数组中该低位桶首结点设置为当前链表中遍历到的结点
