@@ -36,14 +36,14 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
      *
      * 6.rehash:当此次放入元素超过当前 capcity * loader时，需要先执行该操作。
      *   rehash会把hashmap当前桶的数量变为2倍(以达到hashmap的扩容效果)，然后将原有的每个key-value对重新计算索引放入相应的桶中，是一个非常耗时的操作.
-     *   注：rehash操作在1.8之后改变了方式，具体看下面的分析。
+     *   注：rehash操作在1.8之后改变了rehash方式，具体看下面的分析。
      *
      * 7.特别强调：HashMap是线程不安全的!!!
      *   若多个线程并发访问同一个HashMap实例对象，且至少有一个线程对它的操作为“将map结构变化的操作”，
      *   那么必须在外部就对其进行加锁，且通常是对封装了map的对象进行加锁操作。
      *   *（将map结构变化的操作：指的是添加或删除键值对的操作,仅仅改变值不被认为是该种操作）
      *
-     * 8.若不存在第4点中所说的“封装了map的对象”，那么就必须在创建HashMap时就对其进行包装以得到一个线程安全的HashMap，采用下述方法：
+     * 8.若不存在第7点中所说的“封装了map的对象”，那么就必须在创建HashMap时就对其进行包装以得到一个线程安全的HashMap，采用下述方法：
      *   Map m = Collections.synchronizedMap(new HashMap(...));
      *
      * 9.HashMap迭代器的返回是快速-失败(fail-fast)的。
@@ -75,6 +75,8 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
      * 
      * 16.为什么 resize() 方法中有使用  e.hash & oldCap 把当前桶中的链表上所有结点分为高位和低位两部分？
      *    因为oldCap永远是2的整数幂，而hash的二进制数每一位都有可能是1，也有可能是0
+     *    2的整数幂转换为二进制只有最高一位为1，所以hash和它做&操作，除了最高位其他位都不影响，保持原样
+     *    只需比较最高位  如果两者都是1，则&结果为1，那么就放到高位；如果2的整数幂为1，hash这一位为0，则&结果为0，就放到低位
      *    所以理论上来说这么写能够将链表中的结点较为平均的分为高位和低位两部分
      *    较之1.7及之前的rehash操作每次resize，每个元素都需要重新计算hash值来讲效率提升了很多
      *    这也是为什么用  & 而不是用 % 计算余数的原因.
@@ -167,7 +169,7 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
     //为什么table不需要被序列化?
     //因为计算哈希值时有调用object类的hashcode()方法，而不同的虚拟机可能调用该方法返回结果不同
     //导致一个结点在不同的虚拟机下可能放入不同的数组bucket中，但JAVA设计时明确表示是跨平台的语言
-    //所以宁可在序列化时将每个结点的key和value以及hash都存储下来，来保证跨平台的正确性
+    //所以宁可在序列化时将每个结点的key和value都存储下来，来保证跨平台的正确性
     transient HashMap.Node<K,V>[] table;
 
     //map中所有的键值对
@@ -192,7 +194,7 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
      * 无参构造方法，只设置了默认的负载因子
      */
     public HashMap() {
-        this.loadFactor = DEFAULT_LOAD_FACTOR; // all other fields defaulted
+        this.loadFactor = DEFAULT_LOAD_FACTOR; 
     }
     
     /**
@@ -480,15 +482,8 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
 
     
     /**
-     * Save the state of the <tt>HashMap</tt> instance to a stream (i.e.,
-     * serialize it).
-     *
-     * @serialData The <i>capacity</i> of the HashMap (the length of the
-     *             bucket array) is emitted (int), followed by the
-     *             <i>size</i> (an int, the number of key-value
-     *             mappings), followed by the key (Object) and value (Object)
-     *             for each key-value mapping.  The key-value mappings are
-     *             emitted in no particular order.
+     * 序列化map对象
+     * 会将每个键值对的key和value保存下来
      */
     private void writeObject(java.io.ObjectOutputStream s)
         throws IOException {
@@ -501,8 +496,10 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
     }
 
     /**
-     * Reconstitute the {@code HashMap} instance from a stream (i.e.,
-     * deserialize it).
+     * 反序列化map对象
+     * 如果反序列化过程中发现capacity、loadFactor的值异常，则重新给它们赋值并计算阙值
+     * 再调用Map的putVal()方法，把反序列化读出来的key和value放到table中
+     * 
      */
     private void readObject(java.io.ObjectInputStream s)
         throws IOException, ClassNotFoundException {
