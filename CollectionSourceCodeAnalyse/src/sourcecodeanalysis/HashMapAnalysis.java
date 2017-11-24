@@ -57,9 +57,10 @@ public class HashMapAnalysis<K,V> extends AbstractMap<K,V>
      *
      * 11.JDK 1.8 之后，HashMap在桶中的entry数量达到一定值后，会将这些entry转化为红黑树的形式存储，以便提高查询和遍历的效率
      *
-     * 12.HashMap的优点:遍历、插入删除的速度都很快
+     * 12.HashMap的优点:插入、删除的速度都很快,时间复杂度为O(1)
      *
      * 13.HashMap的缺点:在多线程并发情况下可能会导致死循环
+     * 				      对遍历的支持不好，时间复杂度为O(N)
      * 
      * 14.为什么HashMap的table容量都是2的整数幂？
      *    因为二进制计算比十进制计算快,resize只需向左移动一位即可
