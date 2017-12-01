@@ -249,6 +249,69 @@ implements NavigableMap<K,V>, Cloneable, java.io.Serializable {
     
     
     /**
+     * 返回小于指定节点的最大节点，若不存在则返回null
+     * @Param key 指定的key
+     */
+    final Entry<K,V> getLowerEntry(K key) {
+        Entry<K,V> p = root;  //用p变量保存树的节点,刚开始保存的是根节点
+        while (p != null) {   //节点不为空,才继续遍历查找
+            int cmp = compare(key, p.key);  //将当前节点的key和传入的key进行比较
+            if (cmp > 0) {  //结果>0,说明当前节点的key小于传入的key
+                if (p.right != null) //接着判断如果该节点还有右子节点，说明该节点不一定是符合条件的节点，需要继续判断
+                    p = p.right;  //将下一次比较的节点变更为当前节点的右子节点
+                else  //如果该节点已经没有右子节点，说明当前节点就是符合条件的 "小于指定节点的最大节点"
+                    return p;  //直接返回该节点
+            } else {  //结果<=0,说明当前节点的key大于传入的key
+                if (p.left != null) { //接着判断如果该节点还有左子节点，说明该节点还存在key比其更小节点的引用，需要继续判断
+                    p = p.left;  //将下一次比较的节点变更为当前节点的左子节点
+                } else {  //如果该节点没有左子节点,说明需要往上找比其小的节点，再继续和传入的key比较
+                    Entry<K,V> parent = p.parent;  
+                    Entry<K,V> ch = p;
+                    while (parent != null && ch == parent.left) { //往上遍历查找，直到遍历的节点没有父节点或遍历到的节点不是左子树插入
+                        ch = parent;
+                        parent = parent.parent;
+                    }
+                    return parent;  //返回当前遍历到的节点
+                }
+            }
+        }
+        return null;   //根节点为空，直接返回null
+    }
+    
+    
+    /**
+     * 返回大于指定节点的最小节点，若不存在则返回null (与getLowerEntry相似，不再赘述)
+     */
+    final Entry<K,V> getHigherEntry(K key) {
+        Entry<K,V> p = root;
+        while (p != null) {
+            int cmp = compare(key, p.key);
+            if (cmp < 0) {
+                if (p.left != null)
+                    p = p.left;
+                else
+                    return p;
+            } else {
+                if (p.right != null) {
+                    p = p.right;
+                } else {
+                    Entry<K,V> parent = p.parent;
+                    Entry<K,V> ch = p;
+                    while (parent != null && ch == parent.right) {
+                        ch = parent;
+                        parent = parent.parent;
+                    }
+                    return parent;
+                }
+            }
+        }
+        return null;
+    }
+    
+    
+    
+    
+    /**
      * 插入节点,并平衡红黑树的操作
      * 如果原先map中已经有该key对应的键值对，则替换原先该key对应的value为新的value
      * 如果原先map中没有该key对应的键值对，则在map中新插入一个该key和value对应的键值对
@@ -609,23 +672,4 @@ implements NavigableMap<K,V>, Cloneable, java.io.Serializable {
         setColor(x, BLACK);
     }
     
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-	
 }
